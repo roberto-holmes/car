@@ -1,28 +1,116 @@
-#include <WiFi.h>
 #include <stdio.h>
-
-#include "esp_camera.h"
+#include <string.h>
 
 #define CAMERA_MODEL_XIAO_ESP32S3  // Has PSRAM
 
-#include "camera_pins.h"
+#include "esp_event.h"
+#include "esp_camera.h"
+#include "esp_log.h"
+#include "esp_system.h"
+#include "esp_wifi.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/event_groups.h"
+#include "freertos/task.h"
+#include "lwip/err.h"
+#include "lwip/sys.h"
+#include "nvs_flash.h"
+#include "camera_pins.hpp"
+#include "app_httpd.h"
 
-// ===========================
-// Enter your WiFi credentials
-// ===========================
-const char* ssid = "**********";
-const char* password = "**********";
+/* FreeRTOS event group to signal when we are connected*/
+static EventGroupHandle_t s_wifi_event_group;
 
-void startCameraServer();
-void setupLedFlash(int pin);
+/* The event group allows multiple bits for each event, but we only care about two events:
+ * - we are connected to the AP with an IP
+ * - we failed to connect after the maximum amount of retries */
+#define WIFI_CONNECTED_BIT BIT0
+#define WIFI_FAIL_BIT BIT1
+
+static const char* TAG = "car";
+
+esp_ip4_addr_t ip;
+
+static void event_handler(void* arg, esp_event_base_t event_base,
+						  int32_t event_id, void* event_data) {
+	if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
+		esp_wifi_connect();
+	} else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+			esp_wifi_connect();
+			ESP_LOGI(TAG, "retry to connect to the AP");
+	} else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
+		ip_event_got_ip_t* event = (ip_event_got_ip_t*)event_data;
+		ESP_LOGI(TAG, "got ip:" IPSTR, IP2STR(&event->ip_info.ip));
+		ip = event->ip_info.ip;
+		xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
+	}
+}
+
+void wifi_init_sta(void) {
+	s_wifi_event_group = xEventGroupCreate();
+
+	ESP_ERROR_CHECK(esp_netif_init());
+
+	ESP_ERROR_CHECK(esp_event_loop_create_default());
+	esp_netif_create_default_wifi_sta();
+
+	wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+	ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+
+	esp_event_handler_instance_t instance_any_id;
+	esp_event_handler_instance_t instance_got_ip;
+	ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT,
+														ESP_EVENT_ANY_ID,
+														&event_handler,
+														NULL,
+														&instance_any_id));
+	ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT,
+														IP_EVENT_STA_GOT_IP,
+														&event_handler,
+														NULL,
+														&instance_got_ip));
+
+	wifi_config_t wifi_config = {
+		.sta = {
+			.ssid = CONFIG_ESP_WIFI_SSID,
+			.password = CONFIG_ESP_WIFI_PASSWORD,
+			/* Authmode threshold resets to WPA2 as default if password matches WPA2 standards (pasword len => 8).
+			 * If you want to connect the device to deprecated WEP/WPA networks, Please set the threshold value
+			 * to WIFI_AUTH_WEP/WIFI_AUTH_WPA_PSK and set the password with length and format matching to
+			 * WIFI_AUTH_WEP/WIFI_AUTH_WPA_PSK standards.
+			 */
+			.threshold.authmode = WIFI_AUTH_WPA2_PSK,
+			.sae_pwe_h2e = WPA3_SAE_PWE_BOTH,
+			.sae_h2e_identifier = "",
+		},
+	};
+	ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+	ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+	ESP_ERROR_CHECK(esp_wifi_start());
+
+	ESP_LOGI(TAG, "wifi_init_sta finished.");
+
+	/* Waiting until either the connection is established (WIFI_CONNECTED_BIT) or connection failed for the maximum
+	 * number of re-tries (WIFI_FAIL_BIT). The bits are set by event_handler() (see above) */
+	EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group,
+										   WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
+										   pdFALSE,
+										   pdFALSE,
+										   portMAX_DELAY);
+
+	/* xEventGroupWaitBits() returns the bits before the call returned, hence we can test which event actually
+	 * happened. */
+	if (bits & WIFI_CONNECTED_BIT) {
+		ESP_LOGI(TAG, "connected to ap SSID:%s password:%s",
+				 CONFIG_ESP_WIFI_SSID, CONFIG_ESP_WIFI_PASSWORD);
+	} else if (bits & WIFI_FAIL_BIT) {
+		ESP_LOGI(TAG, "Failed to connect to SSID:%s, password:%s",
+				 CONFIG_ESP_WIFI_SSID, CONFIG_ESP_WIFI_PASSWORD);
+	} else {
+		ESP_LOGE(TAG, "UNEXPECTED EVENT");
+	}
+}
 
 void app_main(void) {
-	Serial.begin(115200);
-	while (!Serial)
-		;
-	Serial.setDebugOutput(true);
-	Serial.println();
-
 	camera_config_t config;
 
 	config.ledc_channel = LEDC_CHANNEL_0;
@@ -39,8 +127,8 @@ void app_main(void) {
 	config.pin_pclk = PCLK_GPIO_NUM;
 	config.pin_vsync = VSYNC_GPIO_NUM;
 	config.pin_href = HREF_GPIO_NUM;
-	config.pin_sscb_sda = SIOD_GPIO_NUM;
-	config.pin_sscb_scl = SIOC_GPIO_NUM;
+	config.pin_sccb_sda = SIOD_GPIO_NUM;
+	config.pin_sccb_scl = SIOC_GPIO_NUM;
 	config.pin_pwdn = PWDN_GPIO_NUM;
 	config.pin_reset = RESET_GPIO_NUM;
 	config.xclk_freq_hz = 20000000;
@@ -55,7 +143,7 @@ void app_main(void) {
 	// if PSRAM IC present, init with UXGA resolution and higher JPEG quality
 	//                      for larger pre-allocated frame buffer.
 	if (config.pixel_format == PIXFORMAT_JPEG) {
-		if (psramFound()) {
+		if (CONFIG_SPIRAM) {
 			config.jpeg_quality = 10;
 			config.fb_count = 2;
 			config.grab_mode = CAMERA_GRAB_LATEST;
@@ -75,7 +163,7 @@ void app_main(void) {
 	// camera init
 	esp_err_t err = esp_camera_init(&config);
 	if (err != ESP_OK) {
-		Serial.printf("Camera init failed with error 0x%x", err);
+		ESP_LOGE(TAG, "Camera init failed with error 0x%x", err);
 		return;
 	}
 
@@ -96,23 +184,22 @@ void app_main(void) {
 	setupLedFlash(LED_GPIO_NUM);
 #endif
 
-	WiFi.begin(ssid, password);
-	WiFi.setSleep(false);
-
-	while (WiFi.status() != WL_CONNECTED) {
-		delay(500);
-		Serial.print(".");
+	// Initialize NVS
+	esp_err_t ret = nvs_flash_init();
+	if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+		ESP_ERROR_CHECK(nvs_flash_erase());
+		ret = nvs_flash_init();
 	}
-	Serial.println("");
-	Serial.println("WiFi connected");
+	ESP_ERROR_CHECK(ret);
+
+	ESP_LOGI(TAG, "ESP_WIFI_MODE_STA");
+	wifi_init_sta();
 
 	startCameraServer();
 
-	Serial.print("Camera Ready! Use 'http://");
-	Serial.print(WiFi.localIP());
-	Serial.println("' to connect");
+	ESP_LOGI(TAG, "Camera Ready! Use 'http://" IPSTR "' to connect", IP2STR(&ip));
 	while (true) {
 		// Do nothing. Everything is done in another task by the web server
-		delay(10000);
+		vTaskDelay(500 / portTICK_PERIOD_MS);
 	}
 }
