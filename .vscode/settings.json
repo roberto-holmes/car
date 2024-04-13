@@ -12,8 +12,10 @@
   "idf.pythonBinPathWin": "C:\\Users\\rober\\.espressif\\python_env\\idf5.2_py3.11_env\\Scripts\\python.exe",
   "idf.toolsPathWin": "C:\\Users\\rober\\.espressif",
   "files.associations": {
-    "esp_event.h": "c"
+    "esp_event.h": "c",
+    "esp_camera.h": "c"
   },
   "idf.flashType": "UART",
-  "idf.portWin": "COM4"
+  "idf.portWin": "COM5",
+  "editor.formatOnSave": true
 }
