@@ -3,7 +3,7 @@
 	<head>
 		<meta charset="utf-8" />
 		<meta name="viewport" content="width=device-width,initial-scale=1" />
-		<title>ESP32 OV2460</title>
+		<title>Car</title>
 		<style>
 			body {
 				font-family: Arial, Helvetica, sans-serif;
@@ -365,7 +365,7 @@
 	</head>
 	<body>
 		<div id="logo">
-			<label for="nav-toggle-cb" id="nav-toggle">&#9776;&nbsp;&nbsp;Toggle OV2640 settings</label>
+			<label for="nav-toggle-cb" id="nav-toggle">&#9776;&nbsp;&nbsp;Settings</label>
 		</div>
 		<figure>
 			<div id="stream-container" class="image-container hidden">
@@ -409,8 +409,7 @@
 		</div>
 		<script>
 			document.addEventListener("DOMContentLoaded", function (event) {
-				//var baseHost = document.location.origin;
-				var baseHost = "http://192.168.1.197";
+				var baseHost = document.location.origin;
 				var streamUrl = baseHost + ":81";
 
 				function fetchUrl(url, cb) {
@@ -515,7 +514,6 @@
 					};
 				});
 
-				// read initial values
 				fetch(`${baseHost}/status`)
 					.then(function (response) {
 						return response.json();
@@ -540,23 +538,22 @@
 
 				const stopStream = () => {
 					window.stop();
-					streamButton.innerHTML = "Start Stream";
+					streamButton.innerHTML = "Start";
 				};
 
 				const startStream = () => {
 					view.src = `${streamUrl}/stream`;
 					show(viewContainer);
-					streamButton.innerHTML = "Stop Stream";
+					streamButton.innerHTML = "Stop";
 				};
 
-				// Attach actions to buttons
 				closeButton.onclick = () => {
 					stopStream();
 					hide(viewContainer);
 				};
 
 				streamButton.onclick = () => {
-					const streamEnabled = streamButton.innerHTML === "Stop Stream";
+					const streamEnabled = streamButton.innerHTML === "Stop";
 					if (streamEnabled) {
 						stopStream();
 					} else {
@@ -564,7 +561,6 @@
 					}
 				};
 
-				// Attach default on change action
 				document.querySelectorAll(".default-action").forEach((el) => {
 					el.onchange = () => updateConfig(el);
 				});
