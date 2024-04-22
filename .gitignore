@@ -1,4 +1,5 @@
 .cache/
 build/
+managed_components/espressif__esp32-camera/.component_hash
 sdkconfig
 sdkconfig.old
